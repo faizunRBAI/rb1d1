@@ -232,7 +232,7 @@ jobs:
               \"SVCEOF\",
               \"systemctl daemon-reload\",
               \"systemctl enable python-app.service\",
-              \"systemctl restart python-app.service"
+              \"systemctl restart python-app.service\"
             ]" \
             --timeout-seconds 900 \
             --query "Command.CommandId" \
