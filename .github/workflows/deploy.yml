@@ -104,6 +104,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.0"
+
       - name: Install Ansible and dependencies
         run: |
           sudo apt-get update -y
@@ -227,7 +232,7 @@ jobs:
               \"SVCEOF\",
               \"systemctl daemon-reload\",
               \"systemctl enable python-app.service\",
-              \"systemctl restart python-app.service\"
+              \"systemctl restart python-app.service"
             ]" \
             --timeout-seconds 900 \
             --query "Command.CommandId" \
