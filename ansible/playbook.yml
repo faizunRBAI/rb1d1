@@ -1,0 +1,159 @@
+---
+- name: Configure Python FastAPI application
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    app_dir: /opt/app
+    venv_dir: /opt/app/.venv
+    app_user: ubuntu
+    app_port: 8000
+    s3_bucket: "{{ lookup('env', 'TF_STATE_BUCKET') }}"
+    project_name: "{{ lookup('env', 'PROJECT_NAME') }}"
+    database_url: "{{ lookup('env', 'DATABASE_URL') }}"
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      become: true
+
+    - name: Install system packages
+      ansible.builtin.apt:
+        name:
+          - python3.11
+          - python3.11-venv
+          - python3-pip
+          - awscli
+          - curl
+        state: present
+      become: true
+
+    - name: Create application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+      become: true
+
+    - name: Download application archive from S3
+      ansible.builtin.command:
+        cmd: "aws s3 cp s3://{{ s3_bucket }}/{{ project_name }}/app.tar.gz /tmp/app.tar.gz"
+      changed_when: true
+
+    - name: Extract application archive
+      ansible.builtin.unarchive:
+        src: /tmp/app.tar.gz
+        dest: "{{ app_dir }}"
+        remote_src: true
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+      become: true
+
+    - name: Check if public/ directory exists in archive
+      ansible.builtin.stat:
+        path: "{{ app_dir }}/public"
+      register: public_dir
+
+    - name: Ensure public/ directory is present (create if missing)
+      ansible.builtin.file:
+        path: "{{ app_dir }}/public"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+      become: true
+      when: not public_dir.stat.exists
+
+    - name: Create Python virtual environment
+      ansible.builtin.command:
+        cmd: "python3.11 -m venv {{ venv_dir }}"
+        creates: "{{ venv_dir }}/bin/activate"
+      become: true
+      become_user: "{{ app_user }}"
+
+    - name: Upgrade pip in virtualenv
+      ansible.builtin.pip:
+        name: pip
+        state: latest
+        virtualenv: "{{ venv_dir }}"
+      become: true
+      become_user: "{{ app_user }}"
+
+    - name: Install Python requirements
+      ansible.builtin.pip:
+        requirements: "{{ app_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        state: present
+      become: true
+      become_user: "{{ app_user }}"
+
+    - name: Write application .env file
+      ansible.builtin.shell: |
+        cat > {{ app_dir }}/.env <<'EOF'
+        DATABASE_URL={{ database_url }}
+        APP_ENV=production
+        PORT={{ app_port }}
+        EOF
+      become: true
+      changed_when: true
+
+    - name: Set ownership of application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        recurse: true
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+      become: true
+
+    - name: Write systemd service unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/python-app.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Python FastAPI Application
+          After=network.target
+
+          [Service]
+          User={{ app_user }}
+          WorkingDirectory={{ app_dir }}
+          EnvironmentFile={{ app_dir }}/.env
+          ExecStart={{ venv_dir }}/bin/gunicorn app.main:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:{{ app_port }}
+          Restart=always
+          RestartSec=5
+          StandardOutput=journal
+          StandardError=journal
+
+          [Install]
+          WantedBy=multi-user.target
+      become: true
+
+    - name: Reload systemd daemon
+      ansible.builtin.systemd:
+        daemon_reload: true
+      become: true
+
+    - name: Enable and start python-app service
+      ansible.builtin.systemd:
+        name: python-app.service
+        enabled: true
+        state: restarted
+      become: true
+
+    - name: Wait for application to become healthy
+      ansible.builtin.uri:
+        url: "http://localhost:{{ app_port }}/health/"
+        method: GET
+        status_code: [200, 301, 302, 307, 308]
+        timeout: 10
+      register: health_result
+      retries: 12
+      delay: 10
+      until: health_result.status in [200, 301, 302, 307, 308]
